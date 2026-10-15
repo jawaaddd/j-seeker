@@ -1,0 +1,6 @@
+# gitignore
+.env
+.venv/
+.spotify-token.json
+reports/
+__pycache__/

@@ -1,0 +1,48 @@
+# j-seeker preferences. Secrets (API keys) go in .env, not here.
+
+[paths]
+# Host paths, not container paths. tracks_dir must be the folder slskd downloads
+# into (directories.downloads in slskd.yml, as seen from this machine).
+tracks_dir = "~/Music/DJLib/Tracks"
+# A folder of symlinks is created here for each Spotify playlist.
+playlists_dir = "~/Music/DJLib/Playlists"
+
+[slskd]
+url = "http://localhost:5030"
+
+[search]
+# How long each Soulseek search collects results.
+timeout_seconds = 15
+# File formats in order of preference; later ones are fallbacks.
+formats = ["flac", "aiff", "wav", "mp3"]
+# Minimum bitrate (kbps) for lossy formats like mp3.
+min_bitrate = 320
+# Accept Extended Mixes, and prefer them over the version on Spotify.
+include_extended = true
+# Accept remixes by other artists when the version on Spotify can't be found.
+include_remixes = false
+# How far a file's length may differ from Spotify's for it to count as the same version.
+duration_tolerance_seconds = 5
+
+[download]
+# Give up on a peer after this long and try the next candidate.
+timeout_minutes = 15
+# Candidates to try per track before giving up.
+max_attempts = 3
+# Downloads in flight at once.
+max_concurrent = 5
+
+[metadata]
+# Available fields: {artist}, {title}, {album}, {bpm}, {key}
+filename_format = "{artist} - {title}"
+# "camelot" (8A) or "standard" (Am)
+key_notation = "camelot"
+bpm_decimals = 0
+# Detected BPMs outside this range are halved/doubled into it.
+bpm_min = 70
+bpm_max = 180
+
+[jev]
+model = "jev-latest"
+# Minimum probability for Jev's classification of a file to be trusted.
+min_confidence = 0.6
