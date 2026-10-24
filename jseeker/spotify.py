@@ -1,4 +1,4 @@
-"""Spotify Web API client: reads playlists via the Authorization Code + PKCE flow."""
+"""Spotify Web API client: reads playlists and albums via the Authorization Code + PKCE flow."""
 
 import base64
 import hashlib
@@ -7,12 +7,13 @@ import re
 import secrets
 import time
 import urllib.parse
-import webbrowser
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import requests
+
+from .log import log
 
 AUTH_URL = "https://accounts.spotify.com/authorize"
 TOKEN_URL = "https://accounts.spotify.com/api/token"
@@ -38,11 +39,14 @@ class Track:
         return f"{self.artist} - {self.title}"
 
 
-def parse_playlist_id(link: str) -> str:
-    match = re.search(r"playlist[/:]([A-Za-z0-9]{22})", link) or re.fullmatch(r"([A-Za-z0-9]{22})", link.strip())
-    if not match:
-        raise SystemExit(f"Not a Spotify playlist link: {link}")
-    return match.group(1)
+def parse_link(link: str) -> tuple[str, str]:
+    """Split a Spotify link or URI into its kind ("playlist" or "album") and ID. A bare ID is taken as a playlist."""
+    match = re.search(r"(playlist|album)[/:]([A-Za-z0-9]{22})", link)
+    if match:
+        return match.group(1), match.group(2)
+    if re.fullmatch(r"[A-Za-z0-9]{22}", link.strip()):
+        return "playlist", link.strip()
+    raise SystemExit(f"Not a Spotify playlist or album link: {link}")
 
 
 class Spotify:
@@ -50,6 +54,30 @@ class Spotify:
         self.client_id = client_id
         self.token_path = token_path
         self.token = json.loads(token_path.read_text()) if token_path.exists() else None
+
+    def fetch(self, link: str) -> tuple[str, list[Track]]:
+        """The name and tracks of the playlist or album a link points to."""
+        kind, item_id = parse_link(link)
+        return self.album(item_id) if kind == "album" else self.playlist(item_id)
+
+    def album(self, album_id: str) -> tuple[str, list[Track]]:
+        album = self._get(f"{API_URL}/albums/{album_id}")
+        name = f"{', '.join(a['name'] for a in album['artists'])} - {album['name']}"
+        tracks = []
+        page = album["tracks"]
+        while page:
+            for item in page["items"]:
+                if item.get("type") != "track" or not item.get("id"):
+                    continue
+                tracks.append(Track(
+                    id=item["id"],
+                    title=item["name"],
+                    artists=[a["name"] for a in item["artists"]],
+                    album=album["name"],
+                    duration_ms=item["duration_ms"],
+                ))
+            page = self._get(page["next"]) if page.get("next") else None
+        return name, tracks
 
     def playlist(self, playlist_id: str) -> tuple[str, list[Track]]:
         name = self._get(f"{API_URL}/playlists/{playlist_id}", {"fields": "name"})["name"]
@@ -109,8 +137,7 @@ class Spotify:
             "code_challenge": challenge,
             "state": state,
         })
-        print(f"Log in to Spotify in your browser (one time only). If it doesn't open, visit:\n{url}\n")
-        webbrowser.open(url)
+        log.info(f"Log in to Spotify (one time only) by opening this link in your browser:\n{url}\n")
         query = _wait_for_callback()
         if query.get("state") != state or "code" not in query:
             raise SystemExit(f"Spotify login failed: {query.get('error', 'unexpected response')}")
@@ -155,8 +182,9 @@ def _wait_for_callback() -> dict:
         def log_message(self, *args):
             pass
 
-    parsed = urllib.parse.urlparse(REDIRECT_URI)
-    with HTTPServer((parsed.hostname, parsed.port), Handler) as server:
+    # Listen on every interface: inside the container, 127.0.0.1 only reaches the container itself.
+    # docker-compose.yml publishes the port on the host's 127.0.0.1 only.
+    with HTTPServer(("0.0.0.0", urllib.parse.urlparse(REDIRECT_URI).port), Handler) as server:
         while not result:
             server.handle_request()
     return result

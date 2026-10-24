@@ -1,5 +1,6 @@
 """Client for TypeSafe's Jev decision model."""
 
+import threading
 import time
 
 import requests
@@ -10,11 +11,18 @@ URL = "https://api.typesafe.ai/v1/systemone"
 class Jev:
     def __init__(self, api_key: str, model: str):
         self.model = model
-        self.session = requests.Session()
-        self.session.headers["Authorization"] = f"Bearer {api_key}"
+        self.api_key = api_key
+        self.local = threading.local()  # used from several search threads; requests sessions aren't thread-safe
         # The docs disagree on whether choice options go in "criteria" (option -> description)
         # or "options" (a list); try the former and fall back to the latter once.
         self.options_as_list = False
+
+    @property
+    def session(self) -> requests.Session:
+        if not hasattr(self.local, "session"):
+            self.local.session = requests.Session()
+            self.local.session.headers["Authorization"] = f"Bearer {self.api_key}"
+        return self.local.session
 
     def ask(self, state, questions: dict) -> dict:
         """Ask the given questions about state and return the answers, keyed like questions."""

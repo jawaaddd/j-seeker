@@ -29,12 +29,15 @@ class Config:
     jev_model: str
     jev_min_confidence: float
     search_timeout: int
+    max_searches: int
     formats: list[str]
     min_bitrate: int
     include_extended: bool
     include_remixes: bool
     duration_tolerance: int
-    download_timeout: int
+    queue_timeout: int
+    stall_timeout: int
+    parallel_peers: int
     max_attempts: int
     max_concurrent: int
     filename_format: str
@@ -42,6 +45,7 @@ class Config:
     bpm_decimals: int
     bpm_min: float
     bpm_max: float
+    log_keep_days: int
 
 
 def load() -> Config:
@@ -67,12 +71,15 @@ def load() -> Config:
         jev_model=jev["model"],
         jev_min_confidence=jev["min_confidence"],
         search_timeout=search["timeout_seconds"],
+        max_searches=search.get("max_concurrent", 3),
         formats=[f.lower().lstrip(".") for f in search["formats"]],
         min_bitrate=search["min_bitrate"],
         include_extended=search["include_extended"],
         include_remixes=search["include_remixes"],
         duration_tolerance=search["duration_tolerance_seconds"],
-        download_timeout=download["timeout_minutes"] * 60,
+        queue_timeout=download["queue_timeout_minutes"] * 60,
+        stall_timeout=download["stall_timeout_minutes"] * 60,
+        parallel_peers=max(1, download.get("parallel_peers", 2)),
         max_attempts=download["max_attempts"],
         max_concurrent=download["max_concurrent"],
         filename_format=meta["filename_format"],
@@ -80,4 +87,5 @@ def load() -> Config:
         bpm_decimals=meta["bpm_decimals"],
         bpm_min=meta["bpm_min"],
         bpm_max=meta["bpm_max"],
+        log_keep_days=toml.get("logging", {}).get("keep_days", 30),
     )

@@ -1,0 +1,33 @@
+# Run through ./jSeeker.sh, which sets PUID/PGID/TZ and starts slskd when needed.
+# MUSIC_DIR and SLSKD_DIR can be set in .env; the defaults are below.
+
+services:
+  slskd:
+    image: slskd/slskd:latest
+    container_name: slskd
+    user: "${PUID:-1000}:${PGID:-1000}"
+    ports:
+      - "5030:5030"    # web UI
+      - "50300:50300"  # Soulseek peer connections; forward this on your router
+    environment:
+      SLSKD_API_KEY: ${SLSKD_API_KEY}
+      SLSKD_REMOTE_CONFIGURATION: "true"
+      TZ: ${TZ:-}
+    volumes:
+      - ${SLSKD_DIR:-~/slskd}:/app
+      - ${MUSIC_DIR:-~/Music/DJLib}:/downloads
+
+  jseeker:
+    build: .
+    image: jseeker
+    user: "${PUID:-1000}:${PGID:-1000}"
+    depends_on:
+      slskd:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ:-}
+    ports:
+      - "127.0.0.1:8888:8888"  # Spotify login callback
+    volumes:
+      - .:/app  # code, config.toml and .env, plus logs/, reports/ and the Spotify login written back
+      - ${MUSIC_DIR:-~/Music/DJLib}:/music

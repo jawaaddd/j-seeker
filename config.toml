@@ -1,34 +1,42 @@
 # j-seeker preferences. Secrets (API keys) go in .env, not here.
 
 [paths]
-# Host paths, not container paths. tracks_dir must be the folder slskd downloads
-# into (directories.downloads in slskd.yml, as seen from this machine).
-tracks_dir = "~/Music/DJLib/Tracks"
-# A folder of symlinks is created here for each Spotify playlist.
-playlists_dir = "~/Music/DJLib/Playlists"
+# Paths inside the j-seeker container, where /music is MUSIC_DIR (~/Music/DJLib by default).
+# tracks_dir must be the folder slskd downloads into: directories.downloads in slskd.yml,
+# which slskd sees as /downloads/Tracks.
+tracks_dir = "/music/Tracks"
+# An .m3u8 playlist file is written here for each Spotify playlist or album.
+playlists_dir = "/music/Playlists"
 
 [slskd]
-url = "http://localhost:5030"
+url = "http://slskd:5030"
 
 [search]
 # How long each Soulseek search collects results.
 timeout_seconds = 15
+# Searches running at once. Searching too fast can get your Soulseek account temporarily banned.
+max_concurrent = 3
 # File formats in order of preference; later ones are fallbacks.
 formats = ["flac", "aiff", "wav", "mp3"]
 # Minimum bitrate (kbps) for lossy formats like mp3.
 min_bitrate = 320
 # Accept Extended Mixes, and prefer them over the version on Spotify.
-include_extended = true
+include_extended = false
 # Accept remixes by other artists when the version on Spotify can't be found.
 include_remixes = false
 # How far a file's length may differ from Spotify's for it to count as the same version.
 duration_tolerance_seconds = 5
 
 [download]
-# Give up on a peer after this long and try the next candidate.
-timeout_minutes = 15
-# Candidates to try per track before giving up.
-max_attempts = 3
+# Give up on a peer if the transfer hasn't started after this long (e.g. you're stuck in their queue).
+queue_timeout_minutes = 2
+# Give up on a running transfer if no data arrives for this long. Slow but steady downloads are never cut off.
+stall_timeout_minutes = 2
+# Peers asked for the same track at once. While one has you queued, the next candidate is asked too;
+# whichever starts first is kept and the others are cancelled.
+parallel_peers = 2
+# Candidates to try per track before giving up (including ones asked in parallel).
+max_attempts = 5
 # Downloads in flight at once.
 max_concurrent = 5
 
@@ -36,11 +44,15 @@ max_concurrent = 5
 # Available fields: {artist}, {title}, {album}, {bpm}, {key}
 filename_format = "{artist} - {title}"
 # "camelot" (8A) or "standard" (Am)
-key_notation = "camelot"
+key_notation = "standard"
 bpm_decimals = 0
 # Detected BPMs outside this range are halved/doubled into it.
-bpm_min = 70
-bpm_max = 180
+bpm_min = 80
+bpm_max = 200
+
+[logging]
+# Each run writes a detailed log to logs/. Older logs are deleted after this many days.
+keep_days = 30
 
 [jev]
 model = "jev-latest"

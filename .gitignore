@@ -4,3 +4,4 @@
 .spotify-token.json
 reports/
 __pycache__/
+logs/

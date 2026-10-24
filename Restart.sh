@@ -1,5 +1,3 @@
 #!/bin/bash
-
-docker rm -f slskd
-
-./Start.sh
+# Restart slskd, e.g. after editing slskd.yml
+docker restart slskd

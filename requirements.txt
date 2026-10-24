@@ -2,3 +2,4 @@ essentia
 mutagen
 rapidfuzz
 requests
+rich

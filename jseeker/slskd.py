@@ -1,16 +1,34 @@
 """Minimal client for the slskd REST API."""
 
+import threading
 import time
 import urllib.parse
 
 import requests
 
+from .log import log
+
 
 class Slskd:
+    """Safe to use from several threads: searches run in parallel, but only one may start at a time."""
+
     def __init__(self, url: str, api_key: str):
         self.base = f"{url}/api/v0"
-        self.session = requests.Session()
-        self.session.headers["X-API-Key"] = api_key
+        self.api_key = api_key
+        self.local = threading.local()  # requests sessions aren't thread-safe, so each thread gets its own
+        self.search_lock = threading.Lock()
+        self.reconnect_lock = threading.Lock()
+        self.stopped = threading.Event()  # set on exit so in-flight searches give up
+
+    @property
+    def session(self) -> requests.Session:
+        if not hasattr(self.local, "session"):
+            self.local.session = requests.Session()
+            self.local.session.headers["X-API-Key"] = self.api_key
+        return self.local.session
+
+    def stop(self) -> None:
+        self.stopped.set()
 
     def check(self) -> None:
         try:
@@ -26,7 +44,9 @@ class Slskd:
     def search(self, text: str, timeout_s: int) -> list[dict]:
         """Run a search and return its responses once it completes."""
         for attempt in range(5):
-            response = self.session.post(f"{self.base}/searches", json={"searchText": text, "searchTimeout": timeout_s * 1000}, timeout=30)
+            # slskd answers 429 if another search is starting; once started, searches run in parallel
+            with self.search_lock:
+                response = self.session.post(f"{self.base}/searches", json={"searchText": text, "searchTimeout": timeout_s * 1000}, timeout=30)
             if response.status_code == 409:  # not logged in to the Soulseek server
                 self.reconnect()
                 continue
@@ -39,7 +59,8 @@ class Slskd:
 
         deadline = time.time() + timeout_s + 30
         while time.time() < deadline:
-            time.sleep(1)
+            if self.stopped.wait(1):
+                raise RuntimeError("stopped")
             if self.session.get(f"{self.base}/searches/{search_id}", timeout=30).json().get("isComplete"):
                 break
         return self.session.get(f"{self.base}/searches/{search_id}/responses", timeout=30).json()
@@ -49,17 +70,25 @@ class Slskd:
 
         slskd can get stuck in a "Disconnecting" state after losing the server connection;
         asking it to connect restarts its reconnect loop and gets it out.
+        Searches that hit the disconnect at the same time wait for a single reconnect.
         """
-        print("    slskd lost its Soulseek server connection; reconnecting...")
-        deadline = time.time() + wait_s
-        while time.time() < deadline:
-            self.session.put(f"{self.base}/server", timeout=30)
-            for _ in range(10):
-                time.sleep(3)
-                if self.session.get(f"{self.base}/server", timeout=30).json().get("isLoggedIn"):
-                    print("    Reconnected.")
-                    return
-        raise RuntimeError(f"slskd couldn't log back in to the Soulseek server within {wait_s}s")
+        with self.reconnect_lock:
+            if self._logged_in():  # another thread already reconnected
+                return
+            log.warning("    slskd lost its Soulseek server connection; reconnecting...")
+            deadline = time.time() + wait_s
+            while time.time() < deadline:
+                self.session.put(f"{self.base}/server", timeout=30)
+                for _ in range(10):
+                    if self.stopped.wait(3):
+                        raise RuntimeError("stopped")
+                    if self._logged_in():
+                        log.info("    Reconnected.")
+                        return
+            raise RuntimeError(f"slskd couldn't log back in to the Soulseek server within {wait_s}s")
+
+    def _logged_in(self) -> bool:
+        return self.session.get(f"{self.base}/server", timeout=30).json().get("isLoggedIn", False)
 
     def enqueue(self, batch_id: str, username: str, filename: str, size: int, destination: str) -> bool:
         body = {

@@ -9,6 +9,7 @@ from rapidfuzz import fuzz
 from . import jev as jevlib
 from .config import Config
 from .jev import Jev
+from .log import log
 from .slskd import Slskd
 from .spotify import Track
 
@@ -61,12 +62,20 @@ class Match:
 def find(track: Track, cfg: Config, slskd: Slskd, jev: Jev | None) -> Match:
     """Search Soulseek for a track and return acceptable files, best first."""
     for query in search_queries(track):
-        candidates = _prefilter(track, slskd.search(query, cfg.search_timeout), cfg)
+        responses = slskd.search(query, cfg.search_timeout)
+        candidates = _prefilter(track, responses, cfg)
+        # one log record per query, so lines from searches running in parallel don't interleave
+        lines = [f"    {track}: query {query!r}: {len(responses)} peers responded, {len(candidates)} files passed the filters"]
+        ranked = []
         if candidates:
             _classify(track, candidates, cfg, jev)
             ranked = _rank(candidates, cfg)
-            if ranked:
-                return Match(ranked, query)
+            for c in {(c.basename, c.extension): c for c in candidates}.values():
+                lines.append(f"      {c.category:<13} {c.confidence:.2f} {_minutes(c.length):>7} {c.extension:<4} {c.basename}")
+            lines.append(f"    {len(ranked)} files accepted")
+        log.debug("\n".join(lines))
+        if ranked:
+            return Match(ranked, query)
     return Match()
 
 
@@ -186,7 +195,7 @@ def _classify(track: Track, candidates: list[Candidate], cfg: Config, jev: Jev |
         try:
             results = _classify_with_jev(track, representatives, jev)
         except Exception as error:
-            print(f"    Jev unavailable ({error}); falling back to filename matching")
+            log.warning(f"    Jev unavailable ({error}); falling back to filename matching")
     if results is None:
         results = [_classify_heuristic(track, c) for c in representatives]
 
