@@ -14,11 +14,9 @@ from pathlib import Path
 import requests
 from rapidfuzz import fuzz
 
-from . import jev as jevlib
 from . import matcher, metadata
-from .config import ROOT, Config
+from .config import HOME, Config
 from .display import Display
-from .jev import Jev
 from .log import log, progress
 from .slskd import Slskd
 from .spotify import Track
@@ -53,26 +51,43 @@ class Job:
 
 
 class Library:
-    """Remembers which file in tracks_dir belongs to which Spotify track."""
+    """Remembers which file in tracks_dir belongs to which Spotify track.
+
+    Entries are keyed by Spotify ID and also store the track's ISRC, so a recording that's already in the
+    library under another Spotify ID (a single and its album version, say) is recognized and not downloaded
+    twice. Entries written before ISRCs were stored only match by ID.
+    """
 
     def __init__(self, tracks_dir: Path):
         self.path = tracks_dir / ".jseeker-library.json"
         self.entries = json.loads(self.path.read_text()) if self.path.exists() else {}
+        self.by_isrc: dict[str, list[str]] = {}  # ISRC -> Spotify IDs of the entries with it
+        for track_id, entry in self.entries.items():
+            if entry.get("isrc"):
+                self.by_isrc.setdefault(entry["isrc"], []).append(track_id)
 
-    def file(self, track_id: str) -> str | None:
-        name = self.entries.get(track_id, {}).get("file")
-        return name if name and (self.path.parent / name).exists() else None
+    def file(self, track: Track) -> str | None:
+        """The track's file, found by Spotify ID or else by ISRC, if it's still in tracks_dir."""
+        ids = [track.id, *self.by_isrc.get(track.isrc, [])] if track.isrc else [track.id]
+        for track_id in ids:
+            name = self.entries.get(track_id, {}).get("file")
+            if name and (self.path.parent / name).exists():
+                return name
+        return None
 
     def add(self, track: Track, name: str, flagged: bool) -> None:
-        self.entries[track.id] = {"file": name, "artist": track.artist, "title": track.title, "flagged": flagged}
+        self.entries[track.id] = {
+            "file": name, "artist": track.artist, "title": track.title, "isrc": track.isrc, "flagged": flagged,
+        }
+        if track.isrc and track.id not in self.by_isrc.setdefault(track.isrc, []):
+            self.by_isrc[track.isrc].append(track.id)
         self.path.write_text(json.dumps(self.entries, indent=2, ensure_ascii=False))
 
 
 class Pipeline:
-    def __init__(self, cfg: Config, slskd: Slskd, jev: Jev | None):
+    def __init__(self, cfg: Config, slskd: Slskd):
         self.cfg = cfg
         self.slskd = slskd
-        self.jev = jev
         self.library = Library(cfg.tracks_dir)
         self.name = ""
         self.tracks: list[Track] = []
@@ -85,16 +100,18 @@ class Pipeline:
 
     def run(self, name: str, tracks: list[Track]) -> None:
         self.name, self.tracks = name, tracks
-        self.cfg.playlists_dir.mkdir(parents=True, exist_ok=True)
         self.playlist_file = self.cfg.playlists_dir / f"{metadata.safe_name(name)}.m3u8"
 
         pending, queued = deque(), set()
         for track in tracks:
-            if self.library.file(track.id):
+            keys = {track.id, track.isrc} - {None}
+            if self.library.file(track):
                 self.done.append(str(track))
-            elif track.id not in queued:  # a track listed twice is downloaded once
+            elif not keys & queued:  # a track listed twice, or the same recording under two IDs, is downloaded once
                 pending.append(track)
-                queued.add(track.id)
+                queued |= keys
+            else:
+                log.debug(f"{track}: same track or ISRC as another track in this list; downloading it once")
         self._write_playlist()
         log.info(f"{name}: {len(tracks)} tracks, {len(self.done)} already in your library, {len(pending)} to download\n")
         self.display = Display(name, list(pending), len(self.done))
@@ -113,7 +130,7 @@ class Pipeline:
                         track = pending.popleft()
                         progress.info(f"Searching: {track}")
                         self.display.set(track, "searching")
-                        searching[pool.submit(matcher.find, track, self.cfg, self.slskd, self.jev)] = track
+                        searching[pool.submit(matcher.find, track, self.cfg, self.slskd)] = track
 
                     while found and _job_count(active) < self.cfg.max_concurrent:
                         job = found.popleft()
@@ -282,7 +299,7 @@ class Pipeline:
         self.display.set(job.track, status, f"{detail}, {minutes:.0f} of {self.cfg.queue_timeout / 60:g} min")
 
     def _finish(self, job: Job, batch_id: str) -> None:
-        self.display.set(job.track, "processing", "tagging, detecting BPM and key")
+        self.display.set(job.track, "processing", "tagging, detecting BPM")
         staging = self.cfg.tracks_dir / STAGING / batch_id
         # slskd marks the transfer done slightly before moving the file out of incomplete/
         for _ in range(30):
@@ -321,9 +338,10 @@ class Pipeline:
         if label and label.lower() not in title.lower():
             title = f"{matcher.base_title(track.title)} ({label})"
 
-        bpm, key = metadata.analyze(path, self.cfg.key_notation, self.cfg.bpm_decimals, self.cfg.bpm_min, self.cfg.bpm_max)
-        log.debug(f"    {track}: {bpm} BPM, key {key}, title {title!r}, flagged={flagged}")
-        tags = metadata.Tags(artist=track.artist, title=title, album=track.album, bpm=bpm, key=key)
+        bpm = metadata.detect_bpm(path, self.cfg.bpm_decimals, self.cfg.bpm_min, self.cfg.bpm_max)
+        log.debug(f"    {track}: {bpm or 'no'} BPM, title {title!r}, flagged={flagged}")
+        # no key yet: left empty, for DJ software to detect
+        tags = metadata.Tags(artist=track.artist, title=title, album=track.album, bpm=bpm)
         metadata.write_tags(path, tags)
 
         name = metadata.filename(tags, self.cfg.filename_format, path.suffix.lstrip(".").lower())
@@ -339,20 +357,6 @@ class Pipeline:
         """Whether the file's own tags describe the requested track. Untagged files pass."""
         if not existing.get("title"):
             return True
-        if self.jev:
-            try:
-                answer = self.jev.ask(
-                    {"requested_track": {"artists": track.artists, "title": track.title, "album": track.album},
-                     "file_tags": existing},
-                    {"same_track": jevlib.noul(
-                        "The file's tags describe the same song as the requested track. Ignore formatting, "
-                        "featured artists, album differences and mix names like 'Original' or 'Extended'."
-                    )},
-                )
-                log.debug(f"    Jev tag check for {track}: {existing} -> {answer['same_track']['noul']:.2f}")
-                return answer["same_track"]["noul"] >= 0.5
-            except Exception:
-                log.debug("Jev tag check failed; using fuzzy matching", exc_info=True)
         wanted = f"{track.artists[0]} {matcher.base_title(track.title)}".lower()
         return fuzz.token_set_ratio(wanted, f"{existing.get('artist', '')} {existing['title']}".lower()) >= 75
 
@@ -364,7 +368,7 @@ class Pipeline:
         tracks_dir = Path(os.path.relpath(self.cfg.tracks_dir, self.cfg.playlists_dir)).as_posix()
         lines = ["#EXTM3U", f"#PLAYLIST:{self.name}"]
         for track in self.tracks:
-            file = self.library.file(track.id)
+            file = self.library.file(track)
             if file:
                 lines += [f"#EXTINF:{track.duration_ms // 1000},{track}", f"{tracks_dir}/{file}"]
         self.playlist_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -378,7 +382,7 @@ class Pipeline:
         log.info(f"\n{len(self.done)} linked, {len(self.flagged)} flagged, {len(self.failed)} failed.")
         if not (self.failed or self.flagged):
             return
-        reports = ROOT / "reports"
+        reports = HOME / "reports"
         reports.mkdir(exist_ok=True)
         path = reports / f"{datetime.now():%Y-%m-%d_%H%M} {self.playlist_file.stem}.txt"
         lines = [f"Playlist: {name}", ""]

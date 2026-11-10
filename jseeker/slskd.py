@@ -24,7 +24,8 @@ class Slskd:
     def session(self) -> requests.Session:
         if not hasattr(self.local, "session"):
             self.local.session = requests.Session()
-            self.local.session.headers["X-API-Key"] = self.api_key
+            if self.api_key:  # none when slskd's web authentication is disabled
+                self.local.session.headers["X-API-Key"] = self.api_key
         return self.local.session
 
     def stop(self) -> None:
@@ -34,12 +35,14 @@ class Slskd:
         try:
             response = self.session.get(f"{self.base}/server", timeout=10)
         except requests.ConnectionError:
-            raise SystemExit(f"Can't reach slskd at {self.base}. Is the container running?")
+            raise SystemExit(f"Can't reach slskd at {self.base}. Is slskd running?")
         if response.status_code == 401:
-            raise SystemExit("slskd rejected the API key. Check SLSKD_API_KEY in .env and the key's cidr.")
+            if self.api_key:
+                raise SystemExit("slskd rejected the API key. Check slskd.api_key in config.toml and the key's cidr in slskd.yml.")
+            raise SystemExit("slskd requires an API key. Set slskd.api_key in config.toml, or disable web authentication in slskd.yml.")
         response.raise_for_status()
         if not response.json().get("isLoggedIn"):
-            raise SystemExit("slskd isn't logged in to Soulseek. Check `docker logs slskd`.")
+            raise SystemExit("slskd isn't logged in to Soulseek. Check slskd's log and its soulseek login in slskd.yml.")
 
     def search(self, text: str, timeout_s: int) -> list[dict]:
         """Run a search and return its responses once it completes."""

@@ -6,27 +6,23 @@ from dataclasses import dataclass, field
 
 from rapidfuzz import fuzz
 
-from . import jev as jevlib
 from .config import Config
-from .jev import Jev
 from .log import log
 from .slskd import Slskd
 from .spotify import Track
 
 LOSSY = {"mp3", "m4a", "aac", "ogg", "opus", "wma"}
-MAX_CANDIDATES = 25  # sent to Jev in a single request
+MAX_CANDIDATES = 25  # distinct files kept per search, the most similar first
 MIN_SIMILARITY = 60  # fuzzy match between a file path and "artist title", 0-100
 # an unlabelled file this much longer than Spotify's version is treated as the extended mix
 EXTENDED_MIN_EXTRA_SECONDS = 30
 
-# How a file relates to the requested track
-CATEGORIES = {
-    "exact": "The same recording as the requested track: same version and mix. A different file format, or an 'Original Mix' label when the request has no mix name, still counts.",
-    "extended": "An extended or club mix of the requested version, by the same artist.",
-    "remix": "A remix of the requested track by a different artist than the requested version.",
-    "other_version": "Another version of the same song: radio edit, live, acoustic, instrumental, acapella, DJ mix, bootleg, cover or a different edit.",
-    "wrong_track": "A different song, or it's unclear from the file name that this is the requested song.",
-}
+# How a file can relate to the requested track:
+#   exact          the same recording: same version and mix ("Original Mix" counts when Spotify has no mix name)
+#   extended       an extended or club mix of the requested version, by the same artist
+#   remix          a remix by a different artist than the requested version
+#   other_version  radio edit, live, acoustic, instrumental, acapella, bootleg, cover or another edit
+#   wrong_track    a different song, or the file name doesn't make clear it's the requested song
 
 # Version suffixes Spotify writes as "Title - Suffix"
 VERSION_WORDS = r"mix|remix|edit|version|dub|rework|bootleg|flip|vip|instrumental|acapella|live|remaster(?:ed)?|mono|stereo"
@@ -44,7 +40,6 @@ class Candidate:
     queue_length: int
     upload_speed: int
     category: str = "wrong_track"
-    confidence: float = 0.0
     similarity: float = 0.0
     inferred: bool = False  # category guessed from length rather than the name
 
@@ -59,7 +54,7 @@ class Match:
     query: str = ""
 
 
-def find(track: Track, cfg: Config, slskd: Slskd, jev: Jev | None) -> Match:
+def find(track: Track, cfg: Config, slskd: Slskd) -> Match:
     """Search Soulseek for a track and return acceptable files, best first."""
     for query in search_queries(track):
         responses = slskd.search(query, cfg.search_timeout)
@@ -68,10 +63,10 @@ def find(track: Track, cfg: Config, slskd: Slskd, jev: Jev | None) -> Match:
         lines = [f"    {track}: query {query!r}: {len(responses)} peers responded, {len(candidates)} files passed the filters"]
         ranked = []
         if candidates:
-            _classify(track, candidates, cfg, jev)
+            _classify(track, candidates, cfg)
             ranked = _rank(candidates, cfg)
             for c in {(c.basename, c.extension): c for c in candidates}.values():
-                lines.append(f"      {c.category:<13} {c.confidence:.2f} {_minutes(c.length):>7} {c.extension:<4} {c.basename}")
+                lines.append(f"      {c.category:<13} {_minutes(c.length):>7} {c.extension:<4} {c.basename}")
             lines.append(f"    {len(ranked)} files accepted")
         log.debug("\n".join(lines))
         if ranked:
@@ -183,25 +178,14 @@ def _prefilter(track: Track, responses: list[dict], cfg: Config) -> list[Candida
     return [c for c in candidates if (c.basename.lower(), c.extension) in keep]
 
 
-def _classify(track: Track, candidates: list[Candidate], cfg: Config, jev: Jev | None) -> None:
-    """Set each candidate's category, using Jev when available and heuristics otherwise."""
-    distinct = {}
+def _classify(track: Track, candidates: list[Candidate], cfg: Config) -> None:
+    """Set each candidate's category from its file name, then check it against the file's length."""
+    categories = {}  # many peers share the same file; classify each distinct one once
     for c in candidates:
-        distinct.setdefault((c.basename.lower(), c.extension), c)
-    representatives = list(distinct.values())
-
-    results = None
-    if jev:
-        try:
-            results = _classify_with_jev(track, representatives, jev)
-        except Exception as error:
-            log.warning(f"    Jev unavailable ({error}); falling back to filename matching")
-    if results is None:
-        results = [_classify_heuristic(track, c) for c in representatives]
-
-    by_key = {key: result for key, result in zip(distinct, results)}
-    for c in candidates:
-        c.category, c.confidence = by_key[(c.basename.lower(), c.extension)]
+        key = (c.basename.lower(), c.extension)
+        if key not in categories:
+            categories[key] = _classify_by_name(track, c)
+        c.category = categories[key]
         if not c.length:
             continue
         # trust the clock over the label: an "exact" file must be about as long as Spotify's. A longer
@@ -214,37 +198,10 @@ def _classify(track: Track, candidates: list[Candidate], cfg: Config, jev: Jev |
             c.category = "other_version"
 
 
-def _classify_with_jev(track: Track, candidates: list[Candidate], jev: Jev) -> list[tuple[str, float]]:
-    state = {
-        "requested_track": {
-            "artists": track.artists,
-            "title": track.title,
-            "album": track.album,
-            "length": _minutes(track.duration_ms / 1000),
-        }
-    }
-    questions = {
-        f"file_{i}": jevlib.choice(
-            f"How does this Soulseek file relate to the requested track? "
-            f"Path: {'/'.join(re.split(r'[\\/]', c.filename)[-3:])} | Length: {_minutes(c.length)}",
-            CATEGORIES,
-        )
-        for i, c in enumerate(candidates)
-    }
-    answers = jev.ask(state, questions)
-    results = []
-    for i in range(len(candidates)):
-        answer = answers.get(f"file_{i}", {})
-        category = answer.get("choice", "wrong_track")
-        confidence = answer.get("probabilities", {}).get(category, answer.get("confidence", 0.0))
-        results.append((category, confidence))
-    return results
-
-
-def _classify_heuristic(track: Track, c: Candidate) -> tuple[str, float]:
+def _classify_by_name(track: Track, c: Candidate) -> str:
     stem = c.basename.rsplit(".", 1)[0]
     if fuzz.token_set_ratio(_normalized(f"{track.artists[0]} {base_title(track.title)}"), _normalized(stem)) < 80:
-        return "wrong_track", 1.0
+        return "wrong_track"
 
     wanted, name = _normalized(track.title), _normalized(stem)
 
@@ -252,9 +209,9 @@ def _classify_heuristic(track: Track, c: Candidate) -> tuple[str, float]:
         return re.search(pattern, name) and not re.search(pattern, wanted)
 
     if unrequested(r"\b(remix|rmx|rework|bootleg|flip|vip)\b"):
-        return "remix", 1.0
+        return "remix"
     if unrequested(r"\b(live|acoustic|instrumental|acapella|a cappella|karaoke|cover|demo)\b"):
-        return "other_version", 1.0
+        return "other_version"
 
     # judge the file by the bracketed labels it has that the Spotify title doesn't
     category = "exact"
@@ -263,19 +220,19 @@ def _classify_heuristic(track: Track, c: Candidate) -> tuple[str, float]:
         if not label or label in wanted or re.match(r"(feat|ft|featuring|with)\b", label) or label == "original mix":
             continue
         if re.search(r"\b(remix|rmx|rework|bootleg|flip|vip|dub)\b", label) or (label.endswith("mix") and label not in ("extended mix", "club mix")):
-            return "remix", 1.0
+            return "remix"
         if re.search(r"\b(extended|club mix)\b", label):
             category = "extended"
         else:
-            return "other_version", 1.0  # live, edits, instrumentals, "revisited"...
-    return category, 1.0
+            return "other_version"  # live, edits, instrumentals, "revisited"...
+    return category
 
 
 def _rank(candidates: list[Candidate], cfg: Config) -> list[Candidate]:
     versions = ["extended", "exact"] if cfg.include_extended else ["exact"]
     if cfg.include_remixes:
         versions.append("remix")
-    accepted = [c for c in candidates if c.category in versions and c.confidence >= cfg.jev_min_confidence]
+    accepted = [c for c in candidates if c.category in versions]
     return sorted(accepted, key=lambda c: (
         versions.index(c.category),
         c.inferred,

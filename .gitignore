@@ -5,3 +5,5 @@
 reports/
 __pycache__/
 logs/
+*.egg-info/
+build/

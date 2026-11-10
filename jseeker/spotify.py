@@ -30,6 +30,9 @@ class Track:
     artists: list[str]
     album: str
     duration_ms: int
+    # The recording's ISRC: the same for a single, its album version and compilation copies,
+    # which all have different Spotify IDs. None when Spotify doesn't have one.
+    isrc: str | None = None
 
     @property
     def artist(self) -> str:
@@ -69,12 +72,16 @@ class Spotify:
             for item in page["items"]:
                 if item.get("type") != "track" or not item.get("id"):
                     continue
+                # An album's track list leaves out external_ids, where the ISRC is, and Spotify no longer
+                # lets Development Mode apps fetch several tracks at once, so ask for each track.
+                full = self._get(f"{API_URL}/tracks/{item['id']}")
                 tracks.append(Track(
                     id=item["id"],
                     title=item["name"],
                     artists=[a["name"] for a in item["artists"]],
                     album=album["name"],
                     duration_ms=item["duration_ms"],
+                    isrc=_isrc(full),
                 ))
             page = self._get(page["next"]) if page.get("next") else None
         return name, tracks
@@ -95,6 +102,7 @@ class Spotify:
                     artists=[a["name"] for a in item["artists"]],
                     album=item["album"]["name"],
                     duration_ms=item["duration_ms"],
+                    isrc=_isrc(item),
                 ))
             url, params = page.get("next"), None
         return name, tracks
@@ -167,6 +175,12 @@ class Spotify:
         self.token_path.chmod(0o600)
 
 
+def _isrc(track: dict) -> str | None:
+    """A track object's ISRC, normalized: it's sometimes written with hyphens or in lowercase."""
+    isrc = ((track.get("external_ids") or {}).get("isrc") or "").replace("-", "").strip().upper()
+    return isrc or None
+
+
 def _wait_for_callback() -> dict:
     """Serve one request on the redirect URI and return its query parameters."""
     result = {}
@@ -182,9 +196,8 @@ def _wait_for_callback() -> dict:
         def log_message(self, *args):
             pass
 
-    # Listen on every interface: inside the container, 127.0.0.1 only reaches the container itself.
-    # docker-compose.yml publishes the port on the host's 127.0.0.1 only.
-    with HTTPServer(("0.0.0.0", urllib.parse.urlparse(REDIRECT_URI).port), Handler) as server:
+    redirect = urllib.parse.urlparse(REDIRECT_URI)
+    with HTTPServer((redirect.hostname, redirect.port), Handler) as server:
         while not result:
             server.handle_request()
     return result

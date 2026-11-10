@@ -1,21 +1,29 @@
-# j-seeker preferences. Secrets (API keys) go in .env, not here.
+# j-seeker settings. This file holds your API keys, so don't share it.
 
 [paths]
-# Paths inside the j-seeker container, where /music is MUSIC_DIR (~/Music/DJLib by default).
-# tracks_dir must be the folder slskd downloads into: directories.downloads in slskd.yml,
-# which slskd sees as /downloads/Tracks.
-tracks_dir = "/music/Tracks"
+# tracks_dir must be the folder slskd downloads into (directories.downloads in slskd.yml), as seen
+# from this machine. If slskd runs in Docker, that's the host folder mounted at its download path.
+# On Windows, write paths with forward slashes or single quotes, e.g. 'D:\Music\DJLib\Tracks'.
+tracks_dir = "~/Music/DJLibrary/Tracks"
 # An .m3u8 playlist file is written here for each Spotify playlist or album.
-playlists_dir = "/music/Playlists"
+playlists_dir = "~/Music/DJLibrary/Playlists"
 
 [slskd]
-url = "http://slskd:5030"
+url = "http://localhost:5030"
+# The API key you gave slskd (web.authentication.api_keys in slskd.yml, or SLSKD_API_KEY).
+# Leave it empty if slskd's web authentication is disabled.
+api_key = ""
+
+[spotify]
+# Your Spotify app's Client ID (developer.spotify.com/dashboard).
+# Add http://127.0.0.1:8888/callback as a Redirect URI in the app.
+client_id = ""
 
 [search]
 # How long each Soulseek search collects results.
 timeout_seconds = 15
 # Searches running at once. Searching too fast can get your Soulseek account temporarily banned.
-max_concurrent = 3
+max_concurrent = 5
 # File formats in order of preference; later ones are fallbacks.
 formats = ["flac", "aiff", "wav", "mp3"]
 # Minimum bitrate (kbps) for lossy formats like mp3.
@@ -29,32 +37,25 @@ duration_tolerance_seconds = 5
 
 [download]
 # Give up on a peer if the transfer hasn't started after this long (e.g. you're stuck in their queue).
-queue_timeout_minutes = 2
+queue_timeout_minutes = 1
 # Give up on a running transfer if no data arrives for this long. Slow but steady downloads are never cut off.
-stall_timeout_minutes = 2
+stall_timeout_minutes = 1
 # Peers asked for the same track at once. While one has you queued, the next candidate is asked too;
 # whichever starts first is kept and the others are cancelled.
 parallel_peers = 2
 # Candidates to try per track before giving up (including ones asked in parallel).
 max_attempts = 5
 # Downloads in flight at once.
-max_concurrent = 5
+max_concurrent = 10
 
 [metadata]
-# Available fields: {artist}, {title}, {album}, {bpm}, {key}
+# Available fields: {artist}, {title}, {album}, {bpm}
 filename_format = "{artist} - {title}"
-# "camelot" (8A) or "standard" (Am)
-key_notation = "standard"
 bpm_decimals = 0
 # Detected BPMs outside this range are halved/doubled into it.
 bpm_min = 80
 bpm_max = 200
 
 [logging]
-# Each run writes a detailed log to logs/. Older logs are deleted after this many days.
+# Each run writes a detailed log to the logs folder next to this file. Older logs are deleted after this many days.
 keep_days = 30
-
-[jev]
-model = "jev-latest"
-# Minimum probability for Jev's classification of a file to be trusted.
-min_confidence = 0.6

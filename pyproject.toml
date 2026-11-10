@@ -1,0 +1,19 @@
+[project]
+name = "j-seeker"
+version = "0.1.0"
+description = "Download Spotify playlists and albums through slskd"
+requires-python = ">=3.14"
+dependencies = ["librosa", "mutagen", "rapidfuzz", "requests", "rich"]
+
+[project.scripts]
+jseeker = "jseeker.__main__:main"
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["jseeker"]
+
+[tool.setuptools.package-data]
+jseeker = ["default_config.toml"]
