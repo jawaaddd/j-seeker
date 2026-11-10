@@ -42,7 +42,7 @@ directories:
 # because I'm only running SLSKD on my personal desktop and laptops. But definitely enable it and use an API key
 # or use a username and password if you're accepting connections from the internet
 web:
-  ip_address: 127.0.0.1,[::1 ]
+  ip_address: 127.0.0.1,[::1]
 
   authentication:
     disabled: true # again, don't disable this if you're allowing connections outside your machine!
@@ -52,12 +52,12 @@ web:
     password: <web UI password>
 ```
 
-I ran into an issue where SLSKD wouldn't start the SoulSeek service on it's default port (50300) on my Windows desktop (didn't have the issue on my laptop running linux). Claude says it's because Windows reserves it for something or something. So if you run into the same problem, use a different port like 5031.
+I ran into an issue where SLSKD wouldn't start the SoulSeek service on it's default port (50300) on my Windows desktop (didn't have the issue on my laptop running linux). Claude says it's because Windows reserves it for something or something. So if you run into the same problem, use a different port like 5032.
 
 Change this in SLSKD's config if you run into the same problem:
 ```yaml
 soulseek:
-  listen_port: 5031
+  listen_port: 5032
 ```
 
 Once you have SLSKD up and running, make sure to set the appropriate slskd.url in j-seeker's config as well. It will probably be http://localhost:5030 for most people.
@@ -100,7 +100,7 @@ j-seeker creates `tracks_dir` and `playlists_dir` if they don't exist yet.
 
 ### 4. Download some songs!
 
-Assuming SLSKD is running, then:
+Assuming SLSKD is running , then:
 
 ```bash
 jseeker "https://open.spotify.com/playlist/..."
